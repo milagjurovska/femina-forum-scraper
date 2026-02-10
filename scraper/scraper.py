@@ -31,17 +31,19 @@ class Scraper:
         logger.info("Fetching metadata...")
         metadata = await self._fetcher.fetch_metadata()
         
-        logger.info("Fetching raw data...")
-        raw_data = await self._fetcher.fetch_data(seen_ids=seen_ids, metadata=metadata)
-        
-        logger.info("Parsing data...")
-        parsed_records = self._parser.parse(raw_data, metadata=metadata)
-
-        if parsed_records:
-            logger.info("Saving new records...")
-            self._store.save_records(parsed_records)
-        else:
-            logger.info("No new records to save")
+        logger.info("Fetching data and saving incrementally...")
+        async for chunk in self._fetcher.fetch_data(seen_ids=seen_ids, metadata=metadata):
+            logger.info("Parsing chunk of %d threads...", len(chunk))
+            parsed_records = self._parser.parse(chunk, metadata=metadata)
+            
+            if parsed_records:
+                logger.info("Saving %d new records...", len(parsed_records))
+                self._store.save_records(parsed_records)
+                # Update seen_ids in case scraper restarts
+                for record in parsed_records:
+                    seen_ids.add(record.id)
+            else:
+                logger.info("No new records in this chunk")
         
         logger.info("=" * 80)
         logger.info("Scraping completed for %s", self.site_url)

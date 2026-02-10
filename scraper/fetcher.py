@@ -55,28 +55,25 @@ class Fetcher:
                 logger.info("Found %d categories", len(categories))
                 return categories
 
-    async def fetch_data(self, seen_ids: set, metadata: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """Fetch thread HTML contents from all categories."""
+    async def fetch_data(self, seen_ids: set, metadata: List[Dict[str, str]]):
+        """Fetch thread HTML contents from all categories using a generator."""
         if not metadata:
-            return []
+            return
 
-        all_raw_data = []
         async with aiohttp.ClientSession(headers=self.headers) as session:
             for category in metadata:
-                # Skip "Kanta" if it's the only one found and potentially empty
+                # Skip "Kanta"
                 if "Канта" in category['name']:
                     continue
                     
                 logger.info("Processing category: %s (%s)", category['name'], category['url'])
-                threads_in_cat = await self._fetch_threads_from_category(session, category, seen_ids)
-                all_raw_data.extend(threads_in_cat)
+                async for page_threads in self._fetch_threads_from_category(session, category, seen_ids):
+                    if page_threads:
+                        yield page_threads
 
-        return all_raw_data
-
-    async def _fetch_threads_from_category(self, session, category, seen_ids) -> List[Dict[str, Any]]:
-        """Paginate through category and fetch thread links."""
+    async def _fetch_threads_from_category(self, session, category, seen_ids):
+        """Paginate through category and fetch thread links, yielding per page."""
         category_url = category['url']
-        threads_data = []
         page = 1
         
         while True:
@@ -102,15 +99,13 @@ class Fetcher:
                         break
                 
                 if not thread_links:
-                    logger.warning("No thread links found in %s. HTML snippet: %s", url, html[:500].replace('\n', ' '))
+                    logger.warning("No thread links found in %s.", url)
                     break
                 
                 new_threads_per_page = 0
+                threads_this_page = []
                 for i, link in enumerate(thread_links):
                     href = link.get('href')
-                    if i < 5:
-                        logger.info("Found link href: %s", href)
-                        
                     if not href or 'threads/' not in href:
                         continue
                         
@@ -127,7 +122,7 @@ class Fetcher:
                     async with session.get(thread_url) as thread_resp:
                         if thread_resp.status == 200:
                             thread_html = await thread_resp.text()
-                            threads_data.append({
+                            threads_this_page.append({
                                 "id": thread_id,
                                 "url": thread_url,
                                 "html": thread_html,
@@ -137,9 +132,10 @@ class Fetcher:
                     
                     # Respect rate limits
                     await asyncio.sleep(1 / settings.requests_per_second)
+                
+                if threads_this_page:
+                    yield threads_this_page
                     
                 if new_threads_per_page == 0:
                     break
                 page += 1
-                
-        return threads_data
