@@ -1,9 +1,9 @@
+import re
 import logging
-from typing import Any, List, Dict
+from typing import Any, List
 from bs4 import BeautifulSoup
 from datetime import datetime
-
-from .models import Record
+from vezilka_schemas import Record, RecordMeta, RecordType
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,7 @@ class Parser:
     def __init__(self):
         pass
 
-    def parse(self, raw_data: List[Dict[str, Any]], metadata: Any = None) -> List[Record]:
+    def parse(self, raw_data: List[dict], metadata: Any = None) -> List[Record]:
         """Parse thread raw data into structured Record objects."""
         records = []
         
@@ -36,8 +36,6 @@ class Parser:
                     break
             
             # Extract main post
-            # XF2: .message-body .bbWrapper
-            # XF1: .messageText 
             post_selectors = ['.message-body .bbWrapper', '.messageText', '.post-content', '.entry-content']
             post_bodies = []
             for sel in post_selectors:
@@ -51,30 +49,38 @@ class Parser:
                 main_post_content = self._strip_html(raw_post_html)
                 
                 if not main_post_content:
-                    # If stripping results in empty, maybe it's just one big blockquote or something else
                     main_post_content = BeautifulSoup(raw_post_html, "html.parser").get_text(separator=" ", strip=True)
                 
-                # Extract date
-                # XF2: time.u-dt
-                # XF1: .DateTime or [data-datestring]
-                time_node = soup.select_one('time.u-dt') or soup.select_one('.DateTime') or soup.select_one('[data-datestring]')
-                published_at = None
-                if time_node:
-                    published_at = time_node.get('datetime') or time_node.get('data-time') or time_node.text.strip()
+                # Strict Cyrillic filtering: discard if Latin characters are found
+                if self._contains_latin(main_post_content):
+                    logger.warning("Discarding record %s: content contains Latin characters.", thread_id)
+                    continue
+
+                # Create metadata
+                record_meta = RecordMeta(
+                    source="https://forum.femina.mk/",
+                    url=url,
+                    tags=[category],
+                    labels=[],
+                    scraped_at=datetime.now()
+                )
                 
+                # Create record
                 records.append(Record(
                     id=thread_id,
-                    title=title,
-                    site_url="https://forum.femina.mk/",
-                    page_url=url,
-                    content=main_post_content,
-                    published_at=published_at,
-                    categories=[category]
+                    text=main_post_content,
+                    type=RecordType.NARRATIVE,
+                    last_modified_at=datetime.now(),
+                    meta=record_meta
                 ))
             else:
                 logger.warning("Could not find post content for thread %s. HTML snippet: %s", url, html[:500].replace('\n', ' '))
         
         return records
+
+    def _contains_latin(self, text: str) -> bool:
+        """Check if the text contains any Latin letters."""
+        return bool(re.search(r'[a-zA-Z]', text))
 
     def _strip_html(self, raw_html: str) -> str:
         """Convert HTML content into plain text by removing tags and normalizing whitespace."""
